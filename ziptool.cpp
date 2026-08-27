@@ -220,6 +220,24 @@ class TestWriter final : public zip_archive::Writer {
   uint32_t crc = 0;
 };
 
+class StdoutWriter final : public zip_archive::Writer {
+ public:
+  bool Append(uint8_t* buf, size_t size) override {
+    if (android::base::WriteFully(STDOUT_FILENO, buf, size)) {
+      return true;
+    }
+    error_ = errno;
+    return false;
+  }
+
+  int error() const {
+    return error_;
+  }
+
+ private:
+  int error_ = 0;
+};
+
 static void TestOne(ZipArchiveHandle zah, const ZipEntry64& entry, const std::string& name) {
   if (!flag_q) printf("    testing: %-24s ", name.c_str());
   TestWriter writer;
@@ -238,21 +256,14 @@ static void TestOne(ZipArchiveHandle zah, const ZipEntry64& entry, const std::st
 }
 
 static void ExtractToPipe(ZipArchiveHandle zah, const ZipEntry64& entry, const std::string& name) {
-  // We need to extract to memory because ExtractEntryToFile insists on
-  // being able to seek and truncate, and you can't do that with stdout.
-  if (entry.uncompressed_length > SIZE_MAX) {
-    die(0, "entry size %" PRIu64 " is too large to extract.", entry.uncompressed_length);
-  }
-  auto uncompressed_length = static_cast<size_t>(entry.uncompressed_length);
-  uint8_t* buffer = new uint8_t[uncompressed_length];
-  int err = ExtractToMemory(zah, &entry, buffer, uncompressed_length);
+  StdoutWriter writer;
+  int err = ExtractToWriter(zah, &entry, &writer);
   if (err < 0) {
+    if (writer.error() != 0) {
+      die(writer.error(), "failed to write %s to stdout", name.c_str());
+    }
     die(0, "failed to extract %s: %s", name.c_str(), ErrorCodeString(err));
   }
-  if (!android::base::WriteFully(1, buffer, uncompressed_length)) {
-    die(errno, "failed to write %s to stdout", name.c_str());
-  }
-  delete[] buffer;
 }
 
 static void ExtractOne(ZipArchiveHandle zah, const ZipEntry64& entry, std::string name) {
